@@ -1,0 +1,58 @@
+# Exercise 1: Create Vnet WGVNetRG1
+az group create --name WGVNetRG1 --location SouthCentralUS
+az network vnet create --name WGVNet1 -g WGVNetRG1 -l SouthCentralUS --address-prefixes 10.7.0.0/16 \
+    --subnet-name GatewaySubnet --subnet-prefix 10.7.0.0/29
+az network vnet subnet create --name Management --address-prefix 10.7.0.8/29 --vnet-name WGVNet1 -g WGVNetRG1
+
+# Exercise 2: Create Vnet WGVNet2
+az group create --name WGVNetRG2 --location SouthCentralUS
+az network vnet create --name WGVNet2 -g WGVNetRG2 -l SouthCentralUS --address-prefixes 10.8.0.0/16 \
+    --subnet-name perimeter --subnet-prefix 10.8.0.0/29
+az network vnet subnet create --name DataTier --address-prefix 10.8.2.0/24 --vnet-name WGVNet2 -g WGVNetRG2
+az network vnet subnet create --name WebTier --address-prefix 10.8.1.0/24 --vnet-name WGVNet2 -g WGVNetRG2
+
+# Exercise 3:  Create Routes
+az network route-table create -n MgmtRT -g WGVNetRG1 -l SouthCentralUS
+az network route-table route create --name MgmtToInet --address-prefix 0.0.0.0/0  --next-hop-type VirtualAppliance \
+    --next-hop-ip-address 10.8.0.4 --route-table-name MgmtRT -g WGVNetRG1
+az network route-table route create --name MgmtToData --address-prefix 10.8.2.0/24  --next-hop-type VirtualAppliance \
+    --next-hop-ip-address 10.8.0.4 --route-table-name MgmtRT -g WGVNetRG1
+    az network route-table route create --name MgmtToWeb --address-prefix 10.8.1.0/24  --next-hop-type VirtualAppliance \
+    --next-hop-ip-address 10.8.0.4 --route-table-name MgmtRT -g WGVNetRG1
+
+az network route-table create -n DataRT -g WGVNetRG2 -l SouthCentralUS
+az network route-table route create --name DataToInternet --address-prefix 0.0.0.0/0 --next-hop-type VirtualAppliance \
+    --next-hop-ip-address 10.8.0.4 --route-table-name DataRT -g WGVNetRG2
+az network route-table route create --name DataToMgmt --address-prefix 10.7.0.8/29  --next-hop-type VirtualAppliance \
+    --next-hop-ip-address 10.8.0.4 --route-table-name DataRT -g WGVNetRG2
+az network route-table route create --name DataToWeb --address-prefix 10.8.1.0/24  --next-hop-type VirtualAppliance \
+    --next-hop-ip-address 10.8.0.4 --route-table-name DataRT -g WGVNetRG2
+
+az network route-table create -n WebRT  -g WGVNetRG2 -l SouthCentralUS
+az network route-table route create --name WebToInet --address-prefix 0.0.0.0/0  --next-hop-type VirtualAppliance \
+    --next-hop-ip-address 10.8.0.4 --route-table-name WebRT -g WGVNetRG2
+az network route-table route create --name WebToData --address-prefix 10.8.2.0/24 --next-hop-type VirtualAppliance \
+    --next-hop-ip-address 10.8.0.4 --route-table-name WebRT -g WGVNetRG2
+    az network route-table route create --name WebToMgmt --address-prefix 10.7.0.8/29 --next-hop-type VirtualAppliance \
+    --next-hop-ip-address 10.8.0.4 --route-table-name WebRT -g WGVNetRG2
+
+
+# Excercise 4 Deploy n-tier app
+az group create --name WGVMRGTMT --location SouthCentralUS
+az group deployment create --template-file /mnt/c/ecn-hackathon/cloudshop.json --resource-group WGVMRGTMT \
+    --parameters existingVirtualNetworkName=WGVNet2 existingVirtualNetworkResourceGroup=WGVnetRG2
+
+# Excercise 4, Task 3:  Create a load balancer
+az network lb create --name WGWEBLB -g WGVNETRG2 -l SouthCentralUS --sku Basic --private-ip-address 10.8.1.10 \
+    --vnet-name WGVNet2 --subnet WebTier --backend-pool-name LBBE 
+LBID=`az network lb show --name WGWEBLB -g WGVNETRG2  --output tsv  --query 'backendAddressPools[0].id'`
+az network nic update --name WGWEB1NetworkInterface -g WGVMRGTMT --add ipConfigurations[name=ipconfig1].loadBalancerBackendAddressPools id=$LBID 
+az network nic update --name WGWEB2NetworkInterface -g WGVMRGTMT --add ipConfigurations[name=ipconfig1].loadBalancerBackendAddressPools id=$LBID 
+
+az network lb probe create --lb-name  WGWEBLB --name HTTP --port 80 --protocol Http -g WGVNETRG2 --path / 
+
+az network lb rule create --lb-name WGWEBLB --name HTTP --frontend-port 80 --backend-port 80 --protocol Tcp -g WGVNETRG2 --backend-pool-name LBBE \
+    --frontend-ip-name LoadBalancerFrontEnd --probe-name HTTP
+
+az network nic update --name WGWEB1NetworkInterface -g WGVMRGTMT --remove ipConfigurations[name=ipconfig1].publicIpAddress 
+
